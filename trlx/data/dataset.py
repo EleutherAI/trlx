@@ -1,6 +1,6 @@
 # %%
 from os.path import isfile
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Dict
 
 from tqdm import tqdm
 
@@ -61,7 +61,7 @@ class ContextDistillDataset(Dataset):
         self,
         logits: torch.FloatTensor,
         k: int = 50,
-    ) -> Tuple[torch.Tensor]:
+    ) -> Dict[str, torch.Tensor]:
 
         topk_logits, topk_idx = torch.topk(logits, k, dim=-1)
         other_logits = self.squash_other_logits(logits, k)

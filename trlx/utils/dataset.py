@@ -84,6 +84,7 @@ class ContextDistillDataset(Dataset):
             input_ids = tokenizer(prompt + sample, return_tensors="pt").input_ids
             input_ids = input_ids.to(model.device)
             # N.B.: we may want to only distill on logits b/w [start:-1]
+            # TODO: fix this and getitem
             logits = model(input_ids).logits.squeeze()[start:]  # (seq_len, vocab_size)
             self.teacher_distribution.append(self._process_logits(logits, k))
 
@@ -108,16 +109,16 @@ if __name__ == "__main__":
         # "I like to study deep learning and NLP. I used to research on optimization, too."
     ]
     
-    prompt = ' '.join([str(i) for i in range(1, 10)]) + ' '
+    prompt = ' '.join([str(i) for i in range(1, 51)]) + ' '
     dataset = [
-        "10 11 12 13 14 15 16 17",
+        "51 52 53 54 55 56 57 58",
     ]
 
-    prompt = (
-        'A robot may not injure a human being or, through inaction, allow a human being to come to harm.\n'
-        'A robot must obey the orders given it by human beings except where such orders would conflict with the First Law.\n'
-    )
-    dataset = ['A robot must protect its own existence as long as such protection does not conflict with the First or Second Law.']
+    # prompt = (
+    #     'A robot may not injure a human being or, through inaction, allow a human being to come to harm.\n'
+    #     'A robot must obey the orders given it by human beings except where such orders would conflict with the First Law.\n'
+    # )
+    # dataset = ['A robot must protect its own existence as long as such protection does not conflict with the First or Second Law.']
     
     model = GPTNeoXForCausalLM.from_pretrained("EleutherAI/pythia-1.4b-deduped")
     tokenizer = AutoTokenizer.from_pretrained("EleutherAI/pythia-1.4b-deduped")

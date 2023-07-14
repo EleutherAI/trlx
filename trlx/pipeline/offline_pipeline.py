@@ -290,9 +290,14 @@ class ContextDistillPipeline(BasePipeline):
         return other_logits
 
     def _set_context_length(self, context: str, tokenizer: PreTrainedTokenizer, **tokenizer_kwargs):
+        if context.endswith(" "):
+            _context = context.rstrip()
+            if len(_context) < len(context) - 1:
+                raise ValueError(f"{context} has too many trailing whitespaces!")
+            context = _context
         self.ctx_len = len(
             tokenizer(
-                context.strip(),
+                context,
                 **tokenizer_kwargs,
             )["input_ids"]
         )
@@ -331,7 +336,7 @@ class ContextDistillPipeline(BasePipeline):
         for sample in ctx_prompts:
             input_ids = tokenizer(sample, return_tensors="pt", **tokenizer_kwargs).input_ids
             input_ids = input_ids.to(model.device)
-            logits = model(input_ids).logits.squeeze()[self.ctx_len : -1]  # (seq_len, vocab_size)
+            logits = model(input_ids).logits.squeeze()[self.ctx_len:]  # (seq_len, vocab_size)
 
             self.ref_dist.append(self._process_logits(logits, logit_size))
 

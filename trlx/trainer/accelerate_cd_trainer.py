@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 
+import torch
+import torch.nn as nn
+
 from transformers import AutoModelForCausalLM, PretrainedConfig
 
 from trlx.data.configs import TRLConfig
@@ -7,6 +10,7 @@ from trlx.data.method_configs import MethodConfig, register_method
 from trlx.pipeline.offline_pipeline import ContextDistillPipeline
 from trlx.trainer import register_trainer
 from trlx.trainer.accelerate_base_trainer import AccelerateRLTrainer
+from trlx.data.cd_types import CDBatch
 
 
 @dataclass
@@ -37,6 +41,7 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
             pad_token_id=self.tokenizer.pad_token_id,
         )
 
+        self.loss_fct = nn.KLDivLoss(reduction=None, log_target=True)
         self.context = context
         self.logit_size = kwargs.get("logit_size", 50)
         self.ref_cache_path = kwargs.get("ref_cache_path", None)
@@ -64,19 +69,26 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
 
         return model
 
-    def loss(self, batch):
-        if "labels" in batch:
-            labels = batch.labels.clone()
-        else:
-            labels = batch.input_ids.clone()
-        labels[~batch.attention_mask.bool()] = -100
+    def loss(self, batch: CDBatch):
+        input_ids = batch.input_ids
+        attention_mask = batch.attention_mask
+        ref_logprobs = batch.logprobs
+        vocab_ixs = batch.vocab_ixs
 
-        loss = self.model(input_ids=batch.input_ids, attention_mask=batch.attention_mask, labels=labels).loss
+        logits = self.model(input_ids, attention_mask).logits
+        top_logits = logits.gather(-1, vocab_ixs)
+        stu_logprobs = ContextDistillPipeline.squash_other_logits(logits, top_logits)
+
+        # N.B.: our current impl computes KL-divergence at every token position, and
+        #       it's not clear whether we would like to include the last token logits.
+        loss = self.loss_fct(stu_logprobs, ref_logprobs) # (bsz, seq_len, logit_size+1)
+        kl_mask = attention_mask.detach().clone().unsqueeze(-1)
+        loss = (loss * kl_mask).sum().div(attention_mask.sum())
         stats = {"loss": loss.item()}
-
         return loss, stats
 
     def prepare_learning(self):
+        # TODO: need to check this for context distill compatibility
         train_dataloader = self.store.create_loader(self.config.train.batch_size)
         eval_dataloader = self.eval_pipeline.create_loader(self.config.train.batch_size)
 

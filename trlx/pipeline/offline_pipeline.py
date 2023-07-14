@@ -27,6 +27,7 @@ from trlx.data.cd_types import (
 )
 from trlx.pipeline import BasePipeline, BaseRolloutStore, register_datapipeline
 
+from torchtyping import TensorType
 
 @dataclass
 class DialogMessage:
@@ -191,7 +192,7 @@ def cd_collate_fn(elems: Iterable[CDElement]):
         pad_sequence([torch.LongTensor(x.input_ids) for x in elems], batch_first=True, padding_value=0),
         pad_sequence([torch.LongTensor(x.attention_mask) for x in elems], batch_first=True, padding_value=0),
         pad_sequence([x.logprobs for x in elems], batch_first=True, padding_value=-math.inf),
-        pad_sequence([x.vocab_ixs for x in elems], batch_first=True, padding_value=-100),
+        pad_sequence([x.vocab_ixs for x in elems], batch_first=True, padding_value=0),
     )
 
 
@@ -279,24 +280,24 @@ class ContextDistillPipeline(BasePipeline):
 
     def __len__(self) -> int:
         return len(self.prompts)
-
+    
     @staticmethod
     def squash_other_logits(
-        logits: torch.FloatTensor,
-        logit_size: int,
-    ) -> torch.FloatTensor:
-        """Select all logits outside of top-k and squash them together"""
-        vocab_size = logits.shape[-1]
+        logits: TensorType["batch_size", "query_size", "vocab_size"],
+        top_logits: TensorType["batch_size", "query_size", "logit_size"],
+    ) -> TensorType["batch_size, query_size, logit_size_plus_one"]:
+        # compare these two impls
+        _logits_sum = logits.sum(-1, keepdim=True)
+        _top_logits_sum = top_logits.sum(-1, keepdim=True)
 
-        other_logits = torch.topk(
-            logits,
-            vocab_size - logit_size,
-            dim=-1,
-            largest=False,
-        )[
-            0
-        ].sum(dim=-1, keepdim=True)
-        return other_logits
+        logprobs = torch.log_softmax(
+            torch.cat(
+                (top_logits, _logits_sum - _top_logits_sum),
+                dim=-1,
+            ), dim=-1
+        )
+        return logprobs
+
 
     def _set_context_length(self, context: str, tokenizer: PreTrainedTokenizer, **tokenizer_kwargs):
         if context.endswith(" "):
@@ -318,8 +319,7 @@ class ContextDistillPipeline(BasePipeline):
         logit_size: int = 50,
     ) -> Dict[str, torch.Tensor]:
         top_logits, vocab_ixs = torch.topk(logits, logit_size, dim=-1)
-        other_logits = self.squash_other_logits(logits, logit_size)
-        logprobs = torch.log_softmax(torch.cat((top_logits, other_logits), dim=-1), dim=-1).cpu()
+        logprobs = self.squash_other_logits(logits, top_logits).cpu()
         vocab_ixs = vocab_ixs.cpu()
         return {
             "logprobs": logprobs,

@@ -3,6 +3,8 @@ from os.path import isfile
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Tuple, Union
 
+from tqdm import tqdm
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
@@ -186,8 +188,8 @@ class PromptPipeline(BasePipeline):
 
 def cd_collate_fn(elems: Iterable[CDElement]):
     return CDBatch(
-        pad_sequence([x.input_ids for x in elems], batch_first=True, padding_value=0),
-        pad_sequence([x.attention_mask for x in elems], batch_first=True, padding_value=0),
+        pad_sequence([torch.LongTensor(x.input_ids) for x in elems], batch_first=True, padding_value=0),
+        pad_sequence([torch.LongTensor(x.attention_mask) for x in elems], batch_first=True, padding_value=0),
         pad_sequence([x.logprobs for x in elems], batch_first=True, padding_value=-math.inf),
         pad_sequence([x.vocab_ixs for x in elems], batch_first=True, padding_value=-100),
     )
@@ -237,6 +239,7 @@ class ContextDistillPipeline(BasePipeline):
         ctx_len = self._set_context_length(context, tokenizer, **tokenizer_kwargs)
 
         if ref_cache_path is None or not isfile(ref_cache_path):
+            print(f"Caching teacher distribution to {ref_cache_path}...")
             self._cache_distribution(
                 context,
                 prompts,
@@ -247,6 +250,7 @@ class ContextDistillPipeline(BasePipeline):
                 **tokenizer_kwargs,
             )
         else:
+            print(f"Loading teacher distribution from {ref_cache_path}...")
             self.ref_dist = torch.load(ref_cache_path)
 
         # truncate max_length by ctx_len
@@ -336,7 +340,7 @@ class ContextDistillPipeline(BasePipeline):
         self.ref_dist = []
         model.eval()
         ctx_prompts = [context + prompt for prompt in prompts]
-        for sample in ctx_prompts:
+        for sample in tqdm(ctx_prompts):
             input_ids = tokenizer(sample, return_tensors="pt", **tokenizer_kwargs).input_ids
             input_ids = input_ids.to(model.device)
             logits = model(input_ids).logits.squeeze()[self.ctx_len :]  # (seq_len, vocab_size)

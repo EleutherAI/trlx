@@ -27,6 +27,7 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
     """
     Context Distillation trainer adapted from AccelerateSFTTrainer
     """
+
     def __init__(self, context: str, config: TRLConfig, **kwargs):
         super().__init__(config, **kwargs)
 
@@ -37,7 +38,7 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
         )
 
         self.context = context
-        self.num_logits = kwargs.get("num_logits", 50)
+        self.logit_size = kwargs.get("logit_size", 50)
         self.ref_cache_path = kwargs.get("ref_cache_path", None)
 
     def get_arch(self, config):
@@ -93,11 +94,17 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
     def make_experience(self, samples, seq_length):
         if isinstance(samples[0], str):
             self.store = ContextDistillPipeline(
-                self.context, samples, seq_length, self.tokenizer, num_logits=self.num_logits, ref_cache_path=self.ref_cache_path,
+                self.context,
+                samples,
+                seq_length,
+                self.model,
+                self.tokenizer,
+                logit_size=self.logit_size,
+                ref_cache_path=self.ref_cache_path,
             )
         else:
             raise NotImplementedError(
-                'The vanilla Anthropic context distillation does not consider'
-                'tuning exclusively on assistant responses, but this is something'
-                'we may experiment with in the future.'
+                "The vanilla Anthropic context distillation does not consider"
+                "tuning exclusively on assistant responses, but this is something"
+                "we may experiment with in the future."
             )

@@ -250,7 +250,7 @@ class ContextDistillPipeline(BasePipeline):
             self.ref_dist = torch.load(ref_cache_path)
 
         # truncate max_length by ctx_len
-        tokenizer_kwargs.update({"max_length": max_prompt_length - ctx_len - 1})
+        tokenizer_kwargs.update({"max_length": max_prompt_length - ctx_len})
         model_inputs = tokenizer(
             prompts,
             **tokenizer_kwargs,

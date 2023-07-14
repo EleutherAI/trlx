@@ -284,7 +284,12 @@ class ContextDistillPipeline(BasePipeline):
         """Select all logits outside of top-k and squash them together"""
         vocab_size = logits.shape[-1]
 
-        other_logits = torch.topk(logits, vocab_size - logit_size, dim=-1, largest=False,)[
+        other_logits = torch.topk(
+            logits,
+            vocab_size - logit_size,
+            dim=-1,
+            largest=False,
+        )[
             0
         ].sum(dim=-1, keepdim=True)
         return other_logits
@@ -308,7 +313,6 @@ class ContextDistillPipeline(BasePipeline):
         logits: torch.FloatTensor,
         logit_size: int = 50,
     ) -> Dict[str, torch.Tensor]:
-
         top_logits, vocab_ixs = torch.topk(logits, logit_size, dim=-1)
         other_logits = self.squash_other_logits(logits, logit_size)
         logprobs = torch.log_softmax(torch.cat((top_logits, other_logits), dim=-1), dim=-1).cpu()
@@ -329,14 +333,13 @@ class ContextDistillPipeline(BasePipeline):
         ref_cache_path: Union[str, None] = None,
         **tokenizer_kwargs,
     ) -> Dict[str, torch.Tensor]:
-
         self.ref_dist = []
         model.eval()
         ctx_prompts = [context + prompt for prompt in prompts]
         for sample in ctx_prompts:
             input_ids = tokenizer(sample, return_tensors="pt", **tokenizer_kwargs).input_ids
             input_ids = input_ids.to(model.device)
-            logits = model(input_ids).logits.squeeze()[self.ctx_len:]  # (seq_len, vocab_size)
+            logits = model(input_ids).logits.squeeze()[self.ctx_len :]  # (seq_len, vocab_size)
 
             self.ref_dist.append(self._process_logits(logits, logit_size))
 
@@ -345,7 +348,6 @@ class ContextDistillPipeline(BasePipeline):
         return self.ref_dist
 
     def create_loader(self, batch_size: int, shuffle=False, sampler=None, drop_last=False) -> DataLoader:
-
         # Since all data is already pre-processed, no need to have
         # multi-process data loading
         return DataLoader(

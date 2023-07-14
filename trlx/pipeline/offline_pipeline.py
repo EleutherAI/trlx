@@ -1,3 +1,5 @@
+import math
+from os.path import isfile
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Tuple, Union
 
@@ -6,6 +8,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from transformers import (
     DataCollatorWithPadding,
+    PreTrainedModel,
     PreTrainedTokenizer,
     PreTrainedTokenizerFast,
 )
@@ -15,6 +18,10 @@ from trlx.data.ilql_types import (
     ILQLElement,
     ILQLSeq2SeqBatch,
     ILQLSeq2SeqElement,
+)
+from trlx.data.cd_types import (
+    CDBatch,
+    CDElement,
 )
 from trlx.pipeline import BasePipeline, BaseRolloutStore, register_datapipeline
 
@@ -145,8 +152,7 @@ class PromptPipeline(BasePipeline):
 
         self.tokenizer = tokenizer
         self.prompts = [
-            {"input_ids": tokens, "attention_mask": mask, **metadata}
-            for tokens, mask, metadata in zip(prompts_tokens, attention_mask, metadata)
+            {"input_ids": tokens, "attention_mask": mask} for tokens, mask in zip(prompts_tokens, attention_mask)
         ]
 
     def __getitem__(self, ix: int):
@@ -171,6 +177,176 @@ class PromptPipeline(BasePipeline):
             self,
             batch_size=batch_size,
             collate_fn=collate_fn,
+            shuffle=shuffle,
+            sampler=sampler,
+            num_workers=0,
+            drop_last=drop_last,
+        )
+
+
+def cd_collate_fn(elems: Iterable[CDElement]):
+    return CDBatch(
+        pad_sequence([x.input_ids for x in elems], batch_first=True, padding_value=0),
+        pad_sequence([x.attention_mask for x in elems], batch_first=True, padding_value=0),
+        pad_sequence([x.logprobs for x in elems], batch_first=True, padding_value=-math.inf),
+        pad_sequence([x.vocab_ixs for x in elems], batch_first=True, padding_value=-100),
+    )
+
+
+@register_datapipeline
+class ContextDistillPipeline(BasePipeline):
+    """
+    Dataloader which is used to supply prompts for either training or evaluation
+
+    Args:
+        prompts (`List[str]` or `List[Dict[str, Any]]`): list of raw text prompts or a dictionary with a required
+            key `"prompt"` and extra information, that would be passed along the generation for that prompt as a
+            keyword argument to a reward function.
+        max_prompt_length (`int`): max length of the prompt, if exceeded the prompt will be truncated according to
+            tokenizer's truncation setting.
+        tokenizer (`transformers.PreTrainedTokenizer`): a tokenizer to tokenize prompts with.
+        add_special_tokens (`bool`): whether to encode prompts with tokenizer's special tokens (passed directly
+            into `tokenizer.encode`)
+    """
+
+    def __init__(
+        self,
+        context: str,
+        prompts: Union[List[Dict[str, Any]], List[str]],
+        max_prompt_length: int,
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        add_special_tokens: bool = False,
+        logit_size: int = 50,
+        ref_cache_path: Union[str, None] = None,
+    ):
+        super().__init__()
+
+        if isinstance(prompts[0], dict):
+            metadata = prompts
+            prompts = [x.pop("prompt") for x in metadata]
+        else:
+            metadata = [{}] * len(prompts)
+
+        tokenizer_kwargs = {
+            "truncation": True,
+            "padding": False,
+            "max_length": max_prompt_length,
+            "add_special_tokens": add_special_tokens,
+        }
+        ctx_len = self._set_context_length(context, tokenizer, **tokenizer_kwargs)
+
+        if ref_cache_path is None or not isfile(ref_cache_path):
+            self._cache_distribution(
+                context,
+                prompts,
+                model,
+                tokenizer,
+                logit_size,
+                ref_cache_path,
+                **tokenizer_kwargs,
+            )
+        else:
+            self.ref_dist = torch.load(ref_cache_path)
+
+        # truncate max_length by ctx_len
+        tokenizer_kwargs.update({"max_length": max_prompt_length - ctx_len - 1})
+        model_inputs = tokenizer(
+            prompts,
+            **tokenizer_kwargs,
+        )
+
+        prompts_tokens = model_inputs["input_ids"]
+        attention_mask = model_inputs["attention_mask"]
+
+        self.tokenizer = tokenizer
+        self.prompts = [
+            {"input_ids": tokens, "attention_mask": mask, **metadata}
+            for tokens, mask, metadata in zip(prompts_tokens, attention_mask, metadata)
+        ]
+
+    def __getitem__(self, ix: int):
+        return CDElement(
+            input_ids=self.prompts[ix]["input_ids"],
+            attention_mask=self.prompts[ix]["attention_mask"],
+            logprobs=self.ref_dist[ix]["logprobs"],
+            vocab_ixs=self.ref_dist[ix]["vocab_ixs"],
+        )
+
+    def __len__(self) -> int:
+        return len(self.prompts)
+
+    @staticmethod
+    def squash_other_logits(
+        logits: torch.FloatTensor,
+        logit_size: int,
+    ) -> torch.FloatTensor:
+        """Select all logits outside of top-k and squash them together"""
+        vocab_size = logits.shape[-1]
+
+        other_logits = torch.topk(logits, vocab_size - logit_size, dim=-1, largest=False,)[
+            0
+        ].sum(dim=-1, keepdim=True)
+        return other_logits
+
+    def _set_context_length(self, context: str, tokenizer: PreTrainedTokenizer, **tokenizer_kwargs):
+        self.ctx_len = len(
+            tokenizer(
+                context.strip(),
+                **tokenizer_kwargs,
+            )["input_ids"]
+        )
+        return self.ctx_len
+
+    def _process_logits(
+        self,
+        logits: torch.FloatTensor,
+        logit_size: int = 50,
+    ) -> Dict[str, torch.Tensor]:
+
+        top_logits, vocab_ixs = torch.topk(logits, logit_size, dim=-1)
+        other_logits = self.squash_other_logits(logits, logit_size)
+        logprobs = torch.log_softmax(torch.cat((top_logits, other_logits), dim=-1), dim=-1).cpu()
+        vocab_ixs = vocab_ixs.cpu()
+        return {
+            "logprobs": logprobs,
+            "vocab_ixs": vocab_ixs,
+        }
+
+    @torch.no_grad()
+    def _cache_distribution(
+        self,
+        context: str,
+        prompts: Union[List[Dict[str, Any]], List[str]],
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        logit_size: int = 50,
+        ref_cache_path: Union[str, None] = None,
+        **tokenizer_kwargs,
+    ) -> Dict[str, torch.Tensor]:
+
+        self.ref_dist = []
+        model.eval()
+        ctx_prompts = [context + prompt for prompt in prompts]
+        for sample in ctx_prompts:
+            input_ids = tokenizer(sample, return_tensors="pt", **tokenizer_kwargs).input_ids
+            input_ids = input_ids.to(model.device)
+            logits = model(input_ids).logits.squeeze()[self.ctx_len : -1]  # (seq_len, vocab_size)
+
+            self.ref_dist.append(self._process_logits(logits, logit_size))
+
+        if ref_cache_path is not None:
+            torch.save(self.ref_dist, ref_cache_path)
+        return self.ref_dist
+
+    def create_loader(self, batch_size: int, shuffle=False, sampler=None, drop_last=False) -> DataLoader:
+
+        # Since all data is already pre-processed, no need to have
+        # multi-process data loading
+        return DataLoader(
+            self,
+            batch_size=batch_size,
+            collate_fn=cd_collate_fn,
             shuffle=shuffle,
             sampler=sampler,
             num_workers=0,

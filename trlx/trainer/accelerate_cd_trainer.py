@@ -4,20 +4,16 @@ from transformers import AutoModelForCausalLM, PretrainedConfig
 
 from trlx.data.configs import TRLConfig
 from trlx.data.method_configs import MethodConfig, register_method
-from trlx.pipeline.offline_pipeline import (
-    DialogStore,
-    PromptPipeline,
-    tokenize_dialogue,
-)
+from trlx.pipeline.offline_pipeline import ContextDistillPipeline
 from trlx.trainer import register_trainer
 from trlx.trainer.accelerate_base_trainer import AccelerateRLTrainer
 
 
 @dataclass
 @register_method
-class SFTConfig(MethodConfig):
+class CDConfig(MethodConfig):
     """
-    Config for SFT training
+    Config for context distillation training
 
     :param gen_kwargs: kwargs for generation
     :type gen_kwargs: Dict[str, Any]
@@ -28,7 +24,10 @@ class SFTConfig(MethodConfig):
 
 @register_trainer
 class AccelerateCDTrainer(AccelerateRLTrainer):
-    def __init__(self, config: TRLConfig, **kwargs):
+    """
+    Context Distillation trainer adapted from AccelerateSFTTrainer
+    """
+    def __init__(self, context: str, config: TRLConfig, **kwargs):
         super().__init__(config, **kwargs)
 
         self.generate_kwargs = dict(
@@ -36,6 +35,10 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
             eos_token_id=self.tokenizer.eos_token_id,
             pad_token_id=self.tokenizer.pad_token_id,
         )
+
+        self.context = context
+        self.num_logits = kwargs.get("num_logits", 50)
+        self.ref_cache_path = kwargs.get("ref_cache_path", None)
 
     def get_arch(self, config):
         from_fn = AutoModelForCausalLM.from_pretrained
@@ -89,7 +92,12 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
 
     def make_experience(self, samples, seq_length):
         if isinstance(samples[0], str):
-            self.store = PromptPipeline(samples, seq_length, self.tokenizer)
+            self.store = ContextDistillPipeline(
+                self.context, samples, seq_length, self.tokenizer, num_logits=self.num_logits, ref_cache_path=self.ref_cache_path,
+            )
         else:
-            dialogs = [tokenize_dialogue(d, self.tokenizer, seq_length) for d in samples]
-            self.store = DialogStore(dialogs, self.tokenizer)
+            raise NotImplementedError(
+                'The vanilla Anthropic context distillation does not consider'
+                'tuning exclusively on assistant responses, but this is something'
+                'we may experiment with in the future.'
+            )

@@ -41,7 +41,6 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
             pad_token_id=self.tokenizer.pad_token_id,
         )
 
-        self.loss_fct = nn.KLDivLoss(reduction=None, log_target=True)
         self.context = context
         self.logit_size = kwargs.get("logit_size", 50)
         self.ref_cache_path = kwargs.get("ref_cache_path", None)
@@ -81,9 +80,10 @@ class AccelerateCDTrainer(AccelerateRLTrainer):
 
         # N.B.: our current impl computes KL-divergence at every token position, and
         #       it's not clear whether we would like to include the last token logits.
-        loss = self.loss_fct(stu_logprobs, ref_logprobs) # (bsz, seq_len, logit_size+1)
-        kl_mask = attention_mask.detach().clone().unsqueeze(-1)
-        loss = (loss * kl_mask).sum().div(attention_mask.sum())
+        loss_fct = nn.KLDivLoss(reduction=None, log_target=True)
+        loss = loss_fct(stu_logprobs, ref_logprobs) # (bsz, seq_len, logit_size+1)
+        kl_mask = attention_mask.detach().clone().bool().unsqueeze(-1)
+        loss = torch.masked_select(loss, kl_mask).mean()
         stats = {"loss": loss.item()}
         return loss, stats
 

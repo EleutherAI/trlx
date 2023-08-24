@@ -562,6 +562,9 @@ class AccelerateRLTrainer(BaseRLTrainer):
                             self.accelerator.backward(loss)
                             backward_time += time()
                             stats_accum.append(stats)
+                            self.opt.step()
+                            self.opt.zero_grad()
+                            self.scheduler.step()
 
                     forward_time /= self.num_mb
                     backward_time /= self.num_mb
@@ -569,9 +572,7 @@ class AccelerateRLTrainer(BaseRLTrainer):
                     # How does accelerate do it?
                     stats = {key: sum([stats[key] for stats in stats_accum]) / self.num_mb for key in stats_accum[0]}
 
-                    self.opt.step()
-                    self.opt.zero_grad()
-                    self.scheduler.step()
+                    
                     self.iter_count += 1
 
                     if (

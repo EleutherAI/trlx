@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterable, Tuple
 import numpy as np
 import torch
 from accelerate import Accelerator
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, LambdaLR
 
 
 def is_peft_available():
@@ -88,6 +88,7 @@ class OptimizerName(str, Enum):
     ADAM_8BIT_BNB: str = "adam_8bit_bnb"
     ADAMW_8BIT_BNB: str = "adamw_8bit_bnb"
     SGD: str = "sgd"
+    RMSP: str = "rmsprop"
 
 
 def get_optimizer_class(name: OptimizerName):
@@ -101,6 +102,8 @@ def get_optimizer_class(name: OptimizerName):
         return torch.optim.Adam
     if name == OptimizerName.ADAMW:
         return torch.optim.AdamW
+    if name == OptimizerName.RMSP:
+        return torch.optim.RMSprop
     if name == OptimizerName.ADAM_8BIT_BNB.value:
         try:
             from bitsandbytes.optim import Adam8bit
@@ -132,6 +135,7 @@ class SchedulerName(str, Enum):
 
     COSINE_ANNEALING = "cosine_annealing"
     LINEAR = "linear"
+    LAMBDALR = "lambda_lr"
 
 
 def get_scheduler_class(name: SchedulerName):
@@ -142,6 +146,8 @@ def get_scheduler_class(name: SchedulerName):
         return CosineAnnealingLR
     if name == SchedulerName.LINEAR:
         return LinearLR
+    if name == SchedulerName.LAMBDALR:
+        return LambdaLR
     supported_schedulers = [s.value for s in SchedulerName]
     raise ValueError(f"`{name}` is not a supported scheduler. " f"Supported schedulers are: {supported_schedulers}")
 

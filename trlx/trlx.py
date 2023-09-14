@@ -123,5 +123,5 @@ def train(  # noqa: C901
     )
     trainer.add_eval_pipeline(eval_pipeline)
 
-    trainer.learn()
-    return trainer
+    stats = trainer.learn()
+    return trainer, stats
